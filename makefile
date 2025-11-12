@@ -4,7 +4,7 @@ CFLAGS = -std=c89 -Wall -Wextra -pedantic
 LDFLAGS = -lpthread
 
 # 定义目标文件
-TARGETS = tcp_server tcp_client udp_server udp_client print_mac raw_icmp
+TARGETS = tcp_server tcp_client udp_server udp_client raw_icmp
 
 # 获取所有.c文件
 SRCS = $(wildcard *.c)
@@ -33,11 +33,6 @@ udp_server: udp_server.o
 udp_client: udp_client.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 	@echo "UDP客户端编译完成: $@"
-
-# MAC地址打印程序编译规则
-print_mac: print_mac.o
-	$(CC) -o $@ $^ $(LDFLAGS)
-	@echo "MAC地址打印程序编译完成: $@"
 
 # ICMP程序编译规则
 raw_icmp: raw_icmp.o
@@ -85,7 +80,6 @@ help:
 	@echo "  tcp_client: 仅编译TCP客户端"
 	@echo "  udp_server: 仅编译UDP服务器"
 	@echo "  udp_client: 仅编译UDP客户端"
-	@echo "  print_mac : 仅编译MAC地址打印程序"
 	@echo "  clean     : 清理所有编译产物"
 	@echo "  install   : 安装到系统目录"
 	@echo "  debug     : 编译调试版本"
@@ -103,5 +97,4 @@ tcp_server.o: tcp_server.c
 tcp_client.o: tcp_client.c
 udp_server.o: udp_server.c
 udp_client.o: udp_client.c
-print_mac.o: print_mac.c
 raw_icmp.o: raw_icmp.c
