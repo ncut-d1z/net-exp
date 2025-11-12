@@ -1,0 +1,37 @@
+# 表示这是最顶层的配置文件，编辑器将停止向上查找父级目录中的配置文件
+root = true
+
+# 全局默认设置，适用于所有文件
+[*]
+# 设置字符编码为 UTF-8
+charset = utf-8
+# 设置换行符为 LF（Unix/Linux/macOS 风格），推荐用于跨平台项目
+end_of_line = lf
+# 确保文件末尾保留一个空行
+insert_final_newline = true
+# 删除每行行尾不必要的空格
+trim_trailing_whitespace = true
+# 设置缩进风格为空格
+indent_style = space
+# 设置缩进大小为 4 个空格
+indent_size = 4
+# 设置制表符的宽度为 4 个空格
+tab_width = 4
+
+# 针对 C 源文件和头文件的特定设置
+[*.{c,h,sh}]
+# 缩进风格为空格
+indent_style = space
+# 缩进大小为 4 个空格
+indent_size = 4
+
+# 针对 Makefile 的特定设置
+[Makefile]
+# Makefile 要求必须使用制表符进行缩进，否则会报错
+indent_style = tab
+# 建议保留默认的缩进大小（通常为 8），但可根据团队习惯调整
+indent_size = 8
+
+# 如果项目中有 Markdown 文档，可以取消注释以下块以适应其格式习惯
+[*.md]
+trim_trailing_whitespace = false
