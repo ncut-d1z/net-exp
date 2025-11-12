@@ -67,7 +67,7 @@ int main() {
 
         /* 解析和处理数据包：打印客户端信息和内容 */
         printf("Received %lu bytes from %s:%d\n",
-               (unsigned int) recv_len, inet_ntoa(client_addr.sin_addr),
+               (unsigned long int) recv_len, inet_ntoa(client_addr.sin_addr),
                ntohs(client_addr.sin_port));
         printf("Content: %s\n", buffer);
 

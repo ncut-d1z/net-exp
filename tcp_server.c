@@ -18,7 +18,7 @@ void process_packet(const char* data, ssize_t data_len, char* response) {
     int i;
 
     /* 简单的数据处理：将接收到的数据转换为大写并添加前缀 */
-    snprintf(response, BUFFER_SIZE, "Processed[%lu bytes]: ", (unsigned int) data_len);
+    snprintf(response, BUFFER_SIZE, "Processed[%lu bytes]: ", (unsigned long int) data_len);
     prefix_len = strlen(response);
     /* 处理数据内容（简单示例） */
     for (i = 0; i < data_len && i < BUFFER_SIZE - prefix_len - 1; i++) {
@@ -117,7 +117,7 @@ int main() {
 
             /* 解析和处理数据包 */
             printf("Received %lu bytes from %s:%d\n",
-                   (unsigned int) recv_len, inet_ntoa(client_addr.sin_addr),
+                   (unsigned long int) recv_len, inet_ntoa(client_addr.sin_addr),
                    ntohs(client_addr.sin_port));
             printf("Raw data: %s\n", buffer);
 
