@@ -295,7 +295,7 @@ int resolve_hostname(const char *hostname, struct sockaddr_in *dest) {
 
     he = gethostbyname(hostname);
     if (he == NULL) {
-        herror("gethostbyname failed");
+        perror("gethostbyname failed");
         return -1;
     }
 
