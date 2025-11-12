@@ -3,7 +3,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
-#include <getopt.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
@@ -14,15 +13,13 @@
 #include <errno.h>
 #include "safeio.h"
 
-#if !(_POSIX_C_SOURCE >= 2 || _XOPEN_SOURCE)
-#   error "This program requires POSIX.1 or XOPEN source"
-#endif
-
 /* 定义常量 */
 #define PACKET_SIZE 64
 #define DATA_SIZE 56
 #define MAX_WAIT_TIME 3
 #define MAX_PACKETS 5
+#define TARGET_HOST "127.0.0.1"
+
 #ifndef ICMP_ECHO
 #define ICMP_ECHO 8
 #endif
@@ -49,7 +46,6 @@ void send_icmp_echo(struct sockaddr_in *dest, int seq);
 void recv_icmp_reply();
 void signal_handler(int sig);
 int resolve_hostname(const char *hostname, struct sockaddr_in *dest);
-void print_usage(const char *program_name);
 
 /* 计算ICMP校验和 */
 unsigned short calculate_checksum(unsigned short *ptr, int nbytes) {
@@ -115,7 +111,7 @@ int parse_icmp_reply(char *buf, int len, struct sockaddr_in *from, int seq) {
     ip_hdr_len = ip_hdr->ihl * 4;
 
     /* 检查数据包长度 */
-    if (len < ip_hdr_len + ICMP_ECHOREPLY) {
+    if (len < ip_hdr_len + (int) sizeof(struct icmphdr)) {
         return -1;
     }
 
@@ -235,56 +231,11 @@ void recv_icmp_reply() {
     }
 }
 
-/* 处理ICMP ECHO请求（作为服务器） */
-void handle_icmp_echo_request(char *buf, int len, struct sockaddr_in *from) {
-    struct iphdr *ip_hdr;
-    struct icmphdr *icmp_hdr, reply_hdr;
-    int ip_hdr_len;
-    char send_buf[PACKET_SIZE];
-    int ret;
-
-    /* 解析IP头部 */
-    ip_hdr = (struct iphdr *)buf;
-    ip_hdr_len = ip_hdr->ihl * 4;
-
-    /* 解析ICMP头部 */
-    icmp_hdr = (struct icmphdr *)(buf + ip_hdr_len);
-
-    /* 构建回复包 */
-    memset(&reply_hdr, 0, sizeof(reply_hdr));
-    reply_hdr.type = ICMP_ECHOREPLY;
-    reply_hdr.code = 0;
-    reply_hdr.un.echo.id = icmp_hdr->un.echo.id;
-    reply_hdr.un.echo.sequence = icmp_hdr->un.echo.sequence;
-
-    /* 复制数据 */
-    if (len > ip_hdr_len + (int) sizeof(struct icmphdr)) {
-        memcpy(send_buf + sizeof(reply_hdr),
-               buf + ip_hdr_len + sizeof(struct icmphdr),
-               len - ip_hdr_len - sizeof(struct icmphdr));
-    }
-
-    /* 计算校验和 */
-    reply_hdr.checksum = 0;
-    reply_hdr.checksum = calculate_checksum((unsigned short *)&reply_hdr,
-                                          sizeof(reply_hdr) +
-                                          (len - ip_hdr_len - sizeof(struct icmphdr)));
-
-    /* 发送回复 */
-    memcpy(send_buf, &reply_hdr, sizeof(reply_hdr));
-    ret = sendto(sockfd, send_buf, sizeof(reply_hdr) +
-                (len - ip_hdr_len - sizeof(struct icmphdr)), 0,
-                (struct sockaddr *)from, sizeof(struct sockaddr_in));
-
-    if (ret > 0) {
-        printf("Sent ICMP ECHO reply to %s\n", inet_ntoa(from->sin_addr));
-    }
-}
-
 /* 信号处理函数 */
 void signal_handler(int sig) {
+    (void)sig; /* 避免未使用参数警告 */
     printf("\n--- Statistics ---\n");
-    printf("%d packets sent, %d packets received\n", packet_count, packet_count);
+    printf("%d packets sent\n", packet_count);
     close(sockfd);
     exit(0);
 }
@@ -306,49 +257,9 @@ int resolve_hostname(const char *hostname, struct sockaddr_in *dest) {
     return 0;
 }
 
-/* 打印使用说明 */
-void print_usage(const char *program_name) {
-    printf("Usage: %s [options] <hostname|IP>\n", program_name);
-    printf("Options:\n");
-    printf("  -c count    Number of packets to send (default: 5)\n");
-    printf("  -s          Run as server (listen for ICMP ECHO requests)\n");
-    printf("  -h          Show this help message\n");
-}
-
 int main(int argc, char *argv[]) {
     struct sockaddr_in dest_addr;
-    int server_mode = 0;
-    int packet_limit = MAX_PACKETS;
-    int opt;
     int i;
-
-    /* 解析命令行参数 */
-    while ((opt = getopt(argc, argv, "c:sh")) != -1) {
-        switch (opt) {
-            case 'c':
-                packet_limit = atoi(optarg);
-                if (packet_limit <= 0) {
-                    packet_limit = MAX_PACKETS;
-                }
-                break;
-            case 's':
-                server_mode = 1;
-                break;
-            case 'h':
-                print_usage(argv[0]);
-                return 0;
-            default:
-                print_usage(argv[0]);
-                return 1;
-        }
-    }
-
-    /* 检查参数 */
-    if (optind >= argc && !server_mode) {
-        fprintf(stderr, "Error: Destination host required in client mode\n");
-        print_usage(argv[0]);
-        return 1;
-    }
 
     /* 获取进程ID作为标识符 */
     pid = getpid();
@@ -367,48 +278,23 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    if (server_mode) {
-        /* 服务器模式：监听并回复ICMP ECHO请求 */
-        char recv_buf[PACKET_SIZE * 2];
-        struct sockaddr_in client_addr;
-        socklen_t addr_len;
-        int n;
-
-        printf("ICMP ECHO Server started (PID: %d)\n", pid);
-        printf("Listening for ICMP ECHO requests...\n");
-
-        while (1) {
-            addr_len = sizeof(client_addr);
-            n = recvfrom(sockfd, recv_buf, sizeof(recv_buf), 0,
-                        (struct sockaddr *)&client_addr, &addr_len);
-
-            if (n < 0) {
-                perror("recvfrom failed");
-                continue;
-            }
-
-            /* 处理ICMP ECHO请求 */
-            handle_icmp_echo_request(recv_buf, n, &client_addr);
-        }
-    } else {
-        /* 客户端模式：发送ICMP ECHO请求并等待回复 */
-        if (resolve_hostname(argv[optind], &dest_addr) < 0) {
-            close(sockfd);
-            return 1;
-        }
-
-        printf("PING %s (%s): %d data bytes\n",
-               argv[optind], inet_ntoa(dest_addr.sin_addr), DATA_SIZE);
-
-        /* 发送多个ICMP包 */
-        for (i = 1; i <= packet_limit; i++) {
-            send_icmp_echo(&dest_addr, i);
-            recv_icmp_reply();
-            sleep(1); /* 等待1秒 */
-        }
-
-        signal_handler(SIGINT); /* 显示统计信息 */
+    /* 解析目标地址 */
+    if (resolve_hostname(TARGET_HOST, &dest_addr) < 0) {
+        close(sockfd);
+        return 1;
     }
+
+    printf("PING %s (%s): %d data bytes\n",
+           TARGET_HOST, inet_ntoa(dest_addr.sin_addr), DATA_SIZE);
+
+    /* 发送多个ICMP包 */
+    for (i = 1; i <= MAX_PACKETS; i++) {
+        send_icmp_echo(&dest_addr, i);
+        recv_icmp_reply();
+        sleep(1); /* 等待1秒 */
+    }
+
+    signal_handler(SIGINT); /* 显示统计信息 */
 
     return 0;
 }
