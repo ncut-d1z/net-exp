@@ -1,5 +1,7 @@
 #include "safeio.h"
 #include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
 
 int snprintf(char* buffer, size_t bufsz, const char* format, ...) {
     va_list args;
@@ -18,4 +20,3 @@ int snprintf(char* buffer, size_t bufsz, const char* format, ...) {
 
     return result;
 }
-

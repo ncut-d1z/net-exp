@@ -18,6 +18,12 @@
 #define DATA_SIZE 56
 #define MAX_WAIT_TIME 3
 #define MAX_PACKETS 5
+#ifndef ICMP_ECHO
+#define ICMP_ECHO 8
+#endif
+#ifndef ICMP_ECHOREPLY
+#define ICMP_ECHOREPLY 0
+#endif
 
 /* ICMP数据包结构 */
 struct icmp_packet {
@@ -122,7 +128,7 @@ int parse_icmp_reply(char *buf, int len, struct sockaddr_in *from, int seq) {
     }
 
     /* 提取发送时间（从数据部分） */
-    if (len >= ip_hdr_len + sizeof(struct icmphdr) + sizeof(struct timeval)) {
+    if (len >= ip_hdr_len + (int) sizeof(struct icmphdr) + (int) sizeof(struct timeval)) {
         memcpy(&tv_send, buf + ip_hdr_len + sizeof(struct icmphdr),
                sizeof(struct timeval));
 
@@ -247,7 +253,7 @@ void handle_icmp_echo_request(char *buf, int len, struct sockaddr_in *from) {
     reply_hdr.un.echo.sequence = icmp_hdr->un.echo.sequence;
 
     /* 复制数据 */
-    if (len > ip_hdr_len + sizeof(struct icmphdr)) {
+    if (len > ip_hdr_len + (int) sizeof(struct icmphdr)) {
         memcpy(send_buf + sizeof(reply_hdr),
                buf + ip_hdr_len + sizeof(struct icmphdr),
                len - ip_hdr_len - sizeof(struct icmphdr));
