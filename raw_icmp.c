@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <getopt.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
@@ -12,6 +13,10 @@
 #include <netdb.h>
 #include <errno.h>
 #include "safeio.h"
+
+#if !(_POSIX_C_SOURCE >= 2 || _XOPEN_SOURCE)
+#   error "This program requires POSIX.1 or XOPEN source"
+#endif
 
 /* 定义常量 */
 #define PACKET_SIZE 64
