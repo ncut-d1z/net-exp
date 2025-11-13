@@ -95,7 +95,6 @@ int parse_icmp_reply(char *buf, int len, struct sockaddr_in *from) { /* 函数�
     struct timeval tv_recv; /* 接收时间 */
     struct timeval tv_send; /* 发送时间（来自 data） */
     double rtt; /* 往返时延（毫秒） */
-    int icmp_len_field; /* ICMP 长度字段或可解析的长度 */
     int icmp_data_len; /* ICMP 数据长度 */
     unsigned short recv_seq; /* 从回复中读取到的序列号 */
 
