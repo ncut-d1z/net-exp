@@ -4,7 +4,7 @@ CFLAGS = -std=c89 -Wall -Wextra -pedantic
 LDFLAGS = -lpthread
 
 # 定义目标文件
-TARGETS = tcp_server tcp_client udp_server udp_client raw_icmp trace_route
+TARGETS = tcp_server tcp_client udp_server udp_client raw_icmp trace_route multithread_http_server
 
 # 获取所有.c文件
 SRCS = $(wildcard *.c)
@@ -43,6 +43,11 @@ raw_icmp: raw_icmp.o
 trace_route: trace_route.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 	@echo "路由追踪程序编译完成: $@"
+
+# 多线程HTTP服务器编译规则
+multithread_http_server: multithread_http_server.o
+	$(CC) -o $@ $^ $(LDFLAGS)
+	@echo "多线程HTTP服务器编译完成: $@"
 
 # 通用规则：从.c文件生成.o文件
 %.o: %.c
@@ -87,6 +92,7 @@ help:
 	@echo "  udp_client: 仅编译UDP客户端"
 	@echo "  raw_icmp  : 仅编译ICMP程序"
 	@echo "  trace_route: 仅编译路由追踪程序"
+	@echo "  multithread_http_server: 仅编译多线程HTTP服务器"
 	@echo "  clean     : 清理所有编译产物"
 	@echo "  install   : 安装到系统目录"
 	@echo "  debug     : 编译调试版本"
@@ -106,3 +112,4 @@ udp_server.o: udp_server.c
 udp_client.o: udp_client.c
 raw_icmp.o: raw_icmp.c
 trace_route.o: trace_route.c
+multithread_http_server.o: multithread_http_server.c
