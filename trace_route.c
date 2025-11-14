@@ -1,7 +1,3 @@
-/* tr6_icmp_echo_traceroute.c - IPv6 traceroute using ICMPv6 Echo, C89 compliant */ /* 文件名与说明 */
-/* Compile: gcc -std=c89 -Wall -Wextra -o tr6_icmp_echo_traceroute tr6_icmp_echo_traceroute.c */ /* 编译指令示例 */
-/* Run: sudo ./tr6_icmp_echo_traceroute <destination> [max_hops] [probes_per_hop] [timeout_ms] */ /* 运行说明 */
-
 #include <stdio.h>                      /* 标准输入输出 */
 #include <stdlib.h>                     /* 标准库：malloc, free, atoi, exit */
 #include <string.h>                     /* 字符串处理，如 memset, memcpy, strcmp, strncpy */
@@ -29,6 +25,7 @@ static int g_sock = -1;                 /* 用于发送与接收 ICMPv6 的原�
 /* 信号处理函数，确保在中断时关闭套接字并退出 */
 static void cleanup_and_exit(int signo) /* 信号处理函数声明 */
 {
+    (void)signo; /* 标记参数为未使用，消除警告 */
     if (g_sock >= 0) {                  /* 若套接字已打开 */
         close(g_sock);                  /* 关闭原始套接字 */
         g_sock = -1;                    /* 标记已关闭 */
@@ -103,7 +100,6 @@ int main(int argc, char *argv[]) /* argc/argv 参数 */
     int hop_limit_opt;                  /* hop limit 用于 setsockopt */
     int seq;                            /* ICMP 序列号 */
     struct icmp6_hdr *icmp6;            /* 指向发送/接收缓冲中 icmp6 头的指针 */
-    int i;                              /* 通用循环索引（C89 下在函数首声明） */
     long rtt;                           /* 单次 RTT（毫秒） */
     long rtt_min;                       /* 本跳最小 RTT */
     long rtt_max;                       /* 本跳最大 RTT */
@@ -153,7 +149,13 @@ int main(int argc, char *argv[]) /* argc/argv 参数 */
 
     /* 复制目标地址并设置端口为0（ICMP 不使用 UDP/TCP 端口） */
     memset(&dest_sa, 0, sizeof(dest_sa)); /* 清零目标结构 */
-    memcpy(&dest_sa, res->ai_addr, res->ai_addrlen); /* 复制地址结构 */
+    if (res->ai_family == AF_INET6) {
+        memcpy(&dest_sa, res->ai_addr, res->ai_addrlen); /* 复制地址结构 */
+    } else {
+        fprintf(stderr, "Error: Target is not an IPv6 address\n");
+        freeaddrinfo(res);
+        return 1;
+    }
     dest_sa.sin6_port = htons(0);        /* 端口设为 0 （与 ICMP 无关） */
     dest_len = (socklen_t)res->ai_addrlen; /* 保存地址长度 */
     freeaddrinfo(res);                  /* 释放 getaddrinfo 结果 */
