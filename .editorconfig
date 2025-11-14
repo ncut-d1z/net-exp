@@ -25,9 +25,9 @@ indent_style = space
 # 缩进大小为 4 个空格
 indent_size = 4
 
-# 针对 Makefile 的特定设置
-[Makefile]
-# Makefile 要求必须使用制表符进行缩进，否则会报错
+# 针对 makefile 的特定设置
+[makefile]
+# makefile 要求必须使用制表符进行缩进，否则会报错
 indent_style = tab
 # 建议保留默认的缩进大小（通常为 8），但可根据团队习惯调整
 indent_size = 8
