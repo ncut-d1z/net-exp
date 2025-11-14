@@ -294,3 +294,13 @@ int main(int argc, char *argv[]) { /* 主函数入口 */
     if (listen_fd_v6 >= 0) close(listen_fd_v6); /* 关闭 IPv6 监听 */
     return 0;                     /* 正常退出 */
 }
+
+
+/*
+
+在同一台机器上用 curl 测试 IPv4：
+curl -v --http1.1 http://127.0.0.1/
+或测试 IPv6：
+curl -v --http1.1 http://[::1]/
+
+*/
