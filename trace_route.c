@@ -1,7 +1,3 @@
-/* tr6_icmp_echo_traceroute_no_gai.c - IPv6 traceroute using ICMPv6 Echo, C89 compliant, no gai functions */ /* 文件名与说明 */
-/* Compile: gcc -std=c89 -Wall -Wextra -o tr6_icmp_echo_traceroute tr6_icmp_echo_traceroute_no_gai.c */ /* 编译指令示例 */
-/* Run: sudo ./tr6_icmp_echo_traceroute <ipv6-literal-address> [max_hops] [probes_per_hop] [timeout_ms] */ /* 运行说明（注意：目标必须是 IPv6 字面地址） */
-
 #include <stdio.h>                      /* 标准输入输出 */
 #include <stdlib.h>                     /* 标准库：malloc, free, atoi, exit */
 #include <string.h>                     /* 字符串处理，如 memset, memcpy, strcmp, strncpy */

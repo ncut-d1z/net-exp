@@ -1,4 +1,3 @@
-
 #include <stdio.h>      /* printf */
 #include <stdlib.h>     /* exit */
 #include <string.h>     /* memset */
@@ -7,6 +6,7 @@
 #include <sys/socket.h> /* socket */
 #include <netinet/in.h> /* sockaddr_in */
 #include <arpa/inet.h>  /* inet_addr */
+#include <sys/select.h>
 
 #define TCP_PORT 80   /* TCP server port */
 #define UDP_PORT 53   /* UDP server port */

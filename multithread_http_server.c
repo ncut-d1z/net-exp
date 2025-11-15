@@ -1,4 +1,3 @@
-/* simple_http.c: 一个简单的 IPv4/IPv6 回环上监听的 HTTP/1.1 多线程服务器，C89 标准 */
 #include <stdio.h>               /* 标准输入输出 */
 #include <stdlib.h>              /* 标准库：malloc、free、exit */
 #include <string.h>              /* 字符串操作 */
@@ -6,8 +5,7 @@
 #include <errno.h>               /* errno */
 #include <sys/types.h>           /* 套接字类型 */
 #include <sys/socket.h>          /* 套接字函数 */
-#include <netdb.h>               /* getaddrinfo */
-#include <arpa/inet.h>           /* inet_ntop */
+#include <arpa/inet.h>           /* inet_ntop, inet_pton */
 #include <netinet/in.h>          /* sockaddr_in, sockaddr_in6 */
 #include <pthread.h>             /* pthreads */
 #include <signal.h>              /* 信号处理 */
@@ -91,66 +89,119 @@ static void *client_thread(void *arg) { /* pthread 线程入口 */
 }
 
 /* 为给定的文字地址和端口创建、绑定并监听套接字，返回套接字 fd 或 -1 */
+/* 不使用 getaddrinfo，直接用 inet_pton 填充 sockaddr_in / sockaddr_in6 */
 static int make_and_bind(const char *host, const char *port, int v6only) { /* 创建并绑定 */
-    struct addrinfo hints;        /* getaddrinfo 的 hints */
-    struct addrinfo *res = NULL;  /* 结果链表指针 */
-    struct addrinfo *rp;          /* 遍历用指针 */
     int sfd = -1;                 /* 返回的套接字 */
-    int err;                      /* 临时错误码 */
     int reuse = 1;                /* SO_REUSEADDR 选项值 */
+    int family;                   /* AF_INET 或 AF_INET6 */
+    unsigned short portnum;       /* 端口号（主机字节序） */
+    struct sockaddr_in s4;        /* IPv4 地址结构 */
+    struct sockaddr_in6 s6;       /* IPv6 地址结构 */
+    int ret;                      /* 临时返回值 */
 
-    memset(&hints, 0, sizeof(hints)); /* 清零 hints 结构 */
-    hints.ai_family = AF_UNSPEC;  /* 同时支持 IPv4 和 IPv6 的解析 */
-    hints.ai_socktype = SOCK_STREAM; /* TCP 流套接字 */
-    hints.ai_flags = AI_NUMERICHOST; /* 要求 host 是数字地址，不做 DNS 查询 */
+    /* 将端口字符串转换为数值端口（简单处理） */
+    portnum = (unsigned short)atoi(port); /* atoi 在 C89 可用 */
+    if (portnum == 0 && port[0] != '0') { /* 如果转换结果为0且输入不为"0"，说明可能非法 */
+        fprintf(stderr, "invalid port: %s\n", port); /* 打印错误 */
+        return -1;
+    }
+    portnum = htons(portnum);     /* 转换为网络字节序 */
 
-    err = getaddrinfo(host, port, &hints, &res); /* 解析地址字符串 */
-    if (err != 0) {               /* 解析失败 */
-        fprintf(stderr, "getaddrinfo(%s) failed: %s\n", host, gai_strerror(err)); /* 打印 */
-        return -1;                /* 返回错误 */
+    /* 简单地根据 host 字符串中是否包含 ':' 来判断 IPv6（包含冒号）或 IPv4（点号） */
+    if (strchr(host, ':') != NULL) {
+        family = AF_INET6;
+    } else {
+        family = AF_INET;
     }
 
-    /* 遍历所有候选地址并尝试创建和绑定套接字 */
-    for (rp = res; rp != NULL; rp = rp->ai_next) { /* 遍历 */
-        sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol); /* 创建套接字 */
-        if (sfd == -1) continue; /* 创建失败则尝试下一个地址 */
+    /* 创建套接字并绑定（分别处理 IPv4 和 IPv6） */
+    if (family == AF_INET) {
+        /* 填充 IPv4 sockaddr_in */
+        memset(&s4, 0, sizeof(s4));
+        s4.sin_family = AF_INET;
+        s4.sin_port = portnum;
+        /* 将点分十进制 IPv4 地址转换为二进制网络字节序 */
+        if (inet_pton(AF_INET, host, &s4.sin_addr) != 1) { /* 解析失败 */
+            fprintf(stderr, "inet_pton failed for IPv4 address: %s\n", host); /* 打印 */
+            return -1;
+        }
+
+        /* 创建 IPv4 套接字 */
+        sfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sfd < 0) {
+            fprintf(stderr, "socket(AF_INET) failed: %s\n", strerror(errno)); /* 打印 */
+            return -1;
+        }
 
         /* 允许重用本地地址以便快速重启服务器 */
-        if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&reuse, sizeof(reuse)) < 0) { /* 设置 SO_REUSEADDR */
-            /* 若设置失败，不是致命错误，但记录之 */
-            fprintf(stderr, "setsockopt SO_REUSEADDR failed: %s\n", strerror(errno)); /* 打印 */
+        ret = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&reuse, sizeof(reuse));
+        if (ret < 0) {
+            fprintf(stderr, "setsockopt SO_REUSEADDR failed: %s\n", strerror(errno)); /* 打印但继续 */
         }
 
-        /* 如果是 IPv6，并且用户要求设置为仅 IPv6（防止 IPv4 映射地址） */
-        if (rp->ai_family == AF_INET6 && v6only) { /* 检查 */
-            int on = 1;           /* 选项值 */
-            if (setsockopt(sfd, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&on, sizeof(on)) < 0) { /* 设置 IPV6_V6ONLY */
-                fprintf(stderr, "setsockopt IPV6_V6ONLY failed: %s\n", strerror(errno)); /* 打印 */
-                /* 继续尝试（不立刻关闭） */
+        /* 绑定 IPv4 地址 */
+        if (bind(sfd, (struct sockaddr *)&s4, sizeof(s4)) != 0) {
+            fprintf(stderr, "bind(%s:%s) failed: %s\n", host, port, strerror(errno)); /* 打印 */
+            close(sfd);
+            return -1;
+        }
+
+        /* 监听该套接字 */
+        if (listen(sfd, 16) < 0) {
+            fprintf(stderr, "listen failed: %s\n", strerror(errno)); /* 打印错误 */
+            close(sfd);
+            return -1;
+        }
+
+        return sfd; /* 成功返回 */
+    } else {
+        /* 填充 IPv6 sockaddr_in6 */
+        memset(&s6, 0, sizeof(s6));
+        s6.sin6_family = AF_INET6;
+        s6.sin6_port = portnum;
+        /* 将文本 IPv6 地址转换为二进制 */
+        if (inet_pton(AF_INET6, host, &s6.sin6_addr) != 1) { /* 解析失败 */
+            fprintf(stderr, "inet_pton failed for IPv6 address: %s\n", host); /* 打印 */
+            return -1;
+        }
+
+        /* 创建 IPv6 套接字 */
+        sfd = socket(AF_INET6, SOCK_STREAM, 0);
+        if (sfd < 0) {
+            fprintf(stderr, "socket(AF_INET6) failed: %s\n", strerror(errno)); /* 打印 */
+            return -1;
+        }
+
+        /* 允许重用本地地址以便快速重启服务器 */
+        ret = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&reuse, sizeof(reuse));
+        if (ret < 0) {
+            fprintf(stderr, "setsockopt SO_REUSEADDR failed: %s\n", strerror(errno)); /* 打印但继续 */
+        }
+
+        /* 如果要求仅 IPv6，则设置 IPV6_V6ONLY */
+        if (v6only) {
+            int on = 1;
+            if (setsockopt(sfd, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&on, sizeof(on)) < 0) {
+                fprintf(stderr, "setsockopt IPV6_V6ONLY failed: %s\n", strerror(errno)); /* 打印但继续 */
             }
         }
 
-        /* 绑定套接字到指定地址 */
-        if (bind(sfd, rp->ai_addr, rp->ai_addrlen) == 0) { /* 绑定成功 */
-            /* 监听该套接字 */
-            if (listen(sfd, 16) < 0) { /* 开始监听，backlog = 16 */
-                fprintf(stderr, "listen failed: %s\n", strerror(errno)); /* 打印错误 */
-                close(sfd);         /* 关闭套接字 */
-                sfd = -1;           /* 标记失败 */
-                continue;           /* 尝试下一个地址 */
-            }
-            /* 绑定并监听成功，退出循环 */
-            break;                  /* 跳出 for 循环 */
-        } else {                    /* 绑定失败 */
-            fprintf(stderr, "bind(%s) failed: %s\n", host, strerror(errno)); /* 打印 */
-            close(sfd);             /* 关闭套接字 */
-            sfd = -1;               /* 标记失败 */
-            continue;               /* 尝试下一个地址 */
+        /* 绑定 IPv6 地址 */
+        if (bind(sfd, (struct sockaddr *)&s6, sizeof(s6)) != 0) {
+            fprintf(stderr, "bind(%s:%s) failed: %s\n", host, port, strerror(errno)); /* 打印 */
+            close(sfd);
+            return -1;
         }
+
+        /* 监听该套接字 */
+        if (listen(sfd, 16) < 0) {
+            fprintf(stderr, "listen failed: %s\n", strerror(errno)); /* 打印错误 */
+            close(sfd);
+            return -1;
+        }
+
+        return sfd; /* 成功返回 */
     }
-
-    freeaddrinfo(res);            /* 释放 getaddrinfo 结果 */
-    return sfd;                   /* 返回成功的套接字或 -1 */
 }
 
 /* 接受循环线程：对一个监听套接字不断 accept 并为每个连接创建处理线程 */
