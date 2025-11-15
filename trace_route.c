@@ -77,7 +77,6 @@ static void print_icmp6_info(unsigned char type, unsigned char code) /* 根据�
 /* 主程序 */
 int main(int argc, char *argv[]) /* argc/argv 参数 */
 {
-    int ret;                            /* 通用返回值变量 */
     char *target;                       /* 目标主机名或 IPv6 文本（本程序只接受 IPv6 文本地址） */
     int max_hops;                       /* 最大跳数 */
     int probes;                         /* 每跳探测次数 */
@@ -106,9 +105,6 @@ int main(int argc, char *argv[]) /* argc/argv 参数 */
     long rtt_min;                       /* 本跳最小 RTT */
     long rtt_max;                       /* 本跳最大 RTT */
     long rtt_sum;                       /* 本跳 RTT 总和（用于计算平均） */
-    /* char hostbuf[NI_MAXHOST]; */     /* getnameinfo 已被移除，不再使用 hostbuf */
-    /* int have_name; */                /* 反向 DNS 功能已移除，不再使用 have_name */
-    int i;                              /* 通用循环索引（C89 下在函数首声明） */
 
     /* 参数检查与解析 */
     if (argc < 2) {                     /* 如果没有提供目标 */
