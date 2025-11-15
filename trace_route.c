@@ -1,3 +1,7 @@
+/* tr6_icmp_echo_traceroute_no_gai.c - IPv6 traceroute using ICMPv6 Echo, C89 compliant, no gai functions */ /* 文件名与说明 */
+/* Compile: gcc -std=c89 -Wall -Wextra -o tr6_icmp_echo_traceroute tr6_icmp_echo_traceroute_no_gai.c */ /* 编译指令示例 */
+/* Run: sudo ./tr6_icmp_echo_traceroute <ipv6-literal-address> [max_hops] [probes_per_hop] [timeout_ms] */ /* 运行说明（注意：目标必须是 IPv6 字面地址） */
+
 #include <stdio.h>                      /* 标准输入输出 */
 #include <stdlib.h>                     /* 标准库：malloc, free, atoi, exit */
 #include <string.h>                     /* 字符串处理，如 memset, memcpy, strcmp, strncpy */
@@ -5,8 +9,8 @@
 #include <unistd.h>                     /* close, getpid, _exit */
 #include <sys/types.h>                  /* 基本系统类型定义 */
 #include <sys/socket.h>                 /* socket, bind, sendto, recvfrom 等 */
-#include <netdb.h>                      /* getaddrinfo, getnameinfo, gai_strerror */
-#include <arpa/inet.h>                  /* inet_ntop 等地址文本转换 */
+/* #include <netdb.h> 已移除 - 不再使用 getaddrinfo/getnameinfo/gai_strerror */
+#include <arpa/inet.h>                  /* inet_ntop, inet_pton 等地址文本转换 */
 #include <netinet/in.h>                 /* sockaddr_in6, in6addr_any */
 #include <sys/time.h>                   /* gettimeofday, struct timeval */
 #include <signal.h>                     /* signal */
@@ -73,10 +77,8 @@ static void print_icmp6_info(unsigned char type, unsigned char code) /* 根据�
 /* 主程序 */
 int main(int argc, char *argv[]) /* argc/argv 参数 */
 {
-    struct addrinfo hints;              /* getaddrinfo 提供的 hints 结构 */
-    struct addrinfo *res = NULL;        /* getaddrinfo 返回的结果指针 */
     int ret;                            /* 通用返回值变量 */
-    char *target;                       /* 目标主机名或 IPv6 文本 */
+    char *target;                       /* 目标主机名或 IPv6 文本（本程序只接受 IPv6 文本地址） */
     int max_hops;                       /* 最大跳数 */
     int probes;                         /* 每跳探测次数 */
     int timeout_ms;                     /* 超时毫秒 */
@@ -104,15 +106,16 @@ int main(int argc, char *argv[]) /* argc/argv 参数 */
     long rtt_min;                       /* 本跳最小 RTT */
     long rtt_max;                       /* 本跳最大 RTT */
     long rtt_sum;                       /* 本跳 RTT 总和（用于计算平均） */
-    char hostbuf[NI_MAXHOST];           /* getnameinfo 主机名缓冲 */
-    int have_name;                      /* 是否成功解析到主机名 */
+    /* char hostbuf[NI_MAXHOST]; */     /* getnameinfo 已被移除，不再使用 hostbuf */
+    /* int have_name; */                /* 反向 DNS 功能已移除，不再使用 have_name */
+    int i;                              /* 通用循环索引（C89 下在函数首声明） */
 
     /* 参数检查与解析 */
     if (argc < 2) {                     /* 如果没有提供目标 */
-        fprintf(stderr, "Usage: %s <destination> [max_hops] [probes] [timeout_ms]\n", argv[0]); /* 打印用法 */
+        fprintf(stderr, "Usage: %s <ipv6-literal-address> [max_hops] [probes] [timeout_ms]\n", argv[0]); /* 打印用法，强调目标必须为 IPv6 字面地址 */
         return 1;                       /* 退出 */
     }
-    target = argv[1];                   /* 取得目标字符串 */
+    target = argv[1];                   /* 取得目标字符串（应为 IPv6 文本地址，如 2001:db8::1） */
     if (argc >= 3) {                    /* 若提供了 max_hops */
         max_hops = atoi(argv[2]);       /* 转换为整数 */
         if (max_hops <= 0) max_hops = DEFAULT_MAX_HOPS; /* 非法值用默认 */
@@ -136,29 +139,16 @@ int main(int argc, char *argv[]) /* argc/argv 参数 */
     signal(SIGINT, cleanup_and_exit);   /* 注册 SIGINT （Ctrl-C） */
     signal(SIGTERM, cleanup_and_exit);  /* 注册 SIGTERM */
 
-    /* 解析目标地址（只接受 IPv6） */
-    memset(&hints, 0, sizeof(hints));   /* 清零 hints */
-    hints.ai_family = AF_INET6;         /* 只解析 IPv6 */
-    hints.ai_socktype = SOCK_RAW;       /* raw type（仅用于协助 getaddrinfo，但不实际创建 socket） */
-    hints.ai_flags = 0;                 /* 无特别标志 */
-    ret = getaddrinfo(target, NULL, &hints, &res); /* 解析目标 */
-    if (ret != 0) {                     /* 解析失败 */
-        fprintf(stderr, "getaddrinfo(%s) failed: %s\n", target, gai_strerror(ret)); /* 打印错误 */
+    /* 解析目标地址（只接受 IPv6 文本地址 literal） */
+    memset(&dest_sa, 0, sizeof(dest_sa)); /* 清零目标结构 */
+    dest_sa.sin6_family = AF_INET6;     /* 设置地址族为 IPv6 */
+    /* 使用 inet_pton 解析 IPv6 字面地址，避免使用 getaddrinfo */
+    if (inet_pton(AF_INET6, target, &dest_sa.sin6_addr) != 1) { /* 解析失败则报错并退出 */
+        fprintf(stderr, "Error: target must be an IPv6 literal address (e.g. 2001:db8::1). Provided: %s\n", target); /* 提示用户 */
         return 1;                       /* 退出 */
     }
-
-    /* 复制目标地址并设置端口为0（ICMP 不使用 UDP/TCP 端口） */
-    memset(&dest_sa, 0, sizeof(dest_sa)); /* 清零目标结构 */
-    if (res->ai_family == AF_INET6) {
-        memcpy(&dest_sa, res->ai_addr, res->ai_addrlen); /* 复制地址结构 */
-    } else {
-        fprintf(stderr, "Error: Target is not an IPv6 address\n");
-        freeaddrinfo(res);
-        return 1;
-    }
     dest_sa.sin6_port = htons(0);        /* 端口设为 0 （与 ICMP 无关） */
-    dest_len = (socklen_t)res->ai_addrlen; /* 保存地址长度 */
-    freeaddrinfo(res);                  /* 释放 getaddrinfo 结果 */
+    dest_len = sizeof(dest_sa);          /* 目标地址长度 */
 
     /* 创建原始 ICMPv6 套接字用于发送与接收 */
     g_sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6); /* 创建原始套接字，协议 ICMPv6 */
@@ -219,7 +209,7 @@ int main(int argc, char *argv[]) /* argc/argv 参数 */
             }
 
             /* 发送 ICMPv6 Echo 请求到目标地址 */
-            n = sendto(g_sock, sendbuf, sizeof(struct icmp6_hdr) + PACKET_SIZE - sizeof(struct icmp6_hdr), 0, (struct sockaddr *)&dest_sa, dest_len); /* 发送 raw ICMPv6 报文 */
+            n = sendto(g_sock, sendbuf, PACKET_SIZE, 0, (struct sockaddr *)&dest_sa, dest_len); /* 发送 raw ICMPv6 报文（长度为 PACKET_SIZE） */
             if (n < 0) {                  /* 发送失败 */
                 perror("sendto");         /* 打印错误 */
                 printf(" *");             /* 打印星号表示该次 probe 失败 */
@@ -279,21 +269,11 @@ int main(int argc, char *argv[]) /* argc/argv 参数 */
                 /* 解析 ICMPv6 报文的类型与代码 */
                 /* 对于原始 ICMPv6 套接字，recvbuf 起始一般就是 icmp6 头 */
                 icmp6 = (struct icmp6_hdr *)recvbuf; /* 指向接收到的数据首部 */
-                /* 打印来源地址（以及可能的反向 DNS 名称） */
+                /* 打印来源地址（反向 DNS 功能已移除，本实现不做 getnameinfo） */
                 addr6_to_str(&from_sa, addrstr, sizeof(addrstr)); /* 将来源地址转为文本 */
-                have_name = 0;                /* 初始化没有解析到主机名 */
-                memset(hostbuf, 0, sizeof(hostbuf)); /* 清零主机名缓冲 */
-                ret = getnameinfo((struct sockaddr *)&from_sa, from_len, hostbuf, sizeof(hostbuf), NULL, 0, 0); /* 反向 DNS 解析 */
-                if (ret == 0) {              /* 若解析成功 */
-                    have_name = 1;           /* 标记成功 */
-                }
 
-                /* 打印本次 probe 的结果信息（地址/主机名/RTT/ICMP 类型说明） */
-                if (have_name) {             /* 如果解析到了主机名 */
-                    printf(" %s (%s)  %ld ms", hostbuf, addrstr, rtt); /* 打印主机名 (地址) RTT */
-                } else {
-                    printf(" %s  %ld ms", addrstr, rtt); /* 仅打印地址与 RTT */
-                }
+                /* 打印本次 probe 的结果信息（地址/RTT/ICMP 类型说明） */
+                printf(" %s  %ld ms", addrstr, rtt); /* 仅打印地址与 RTT（无主机名解析） */
                 /* 打印 ICMPv6 类型/代码的可读信息 */
                 if (n >= (ssize_t)sizeof(struct icmp6_hdr)) { /* 确保接收到的数据至少包含 icmp6 头 */
                     print_icmp6_info(icmp6->icmp6_type, icmp6->icmp6_code); /* 打印类型/代码说明 */
