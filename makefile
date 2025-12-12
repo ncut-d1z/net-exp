@@ -4,7 +4,7 @@ CFLAGS = -std=c89 -Wall -Wextra -pedantic
 LDFLAGS = -lpthread
 
 # 定义目标文件
-TARGETS = tcp_server tcp_client udp_server udp_client raw_icmp trace_route multithread_http_server select_io_server select_io_client
+TARGETS = tcp_server tcp_client udp_server udp_client raw_voice_proto raw_icmp trace_route multithread_http_server select_io_server select_io_client
 
 # 获取所有.c文件
 SRCS = $(wildcard *.c)
@@ -33,6 +33,11 @@ udp_server: udp_server.o
 udp_client: udp_client.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 	@echo "UDP客户端编译完成: $@"
+
+# 基于RAW的客户端/服务器编译规则
+raw_voice_proto: raw_voice_proto.o
+	$(CC) -o $@ $^ $(LDFLAGS)
+	@echo "基于RAW的客户端/服务器编译完成: $@"
 
 # ICMP程序编译规则
 raw_icmp: raw_icmp.o
@@ -100,6 +105,7 @@ help:
 	@echo "  tcp_client: 仅编译TCP客户端"
 	@echo "  udp_server: 仅编译UDP服务器"
 	@echo "  udp_client: 仅编译UDP客户端"
+	@echo "  raw_voice_proto: 仅编译raw_voice_proto"
 	@echo "  raw_icmp  : 仅编译ICMP程序"
 	@echo "  trace_route: 仅编译路由追踪程序"
 	@echo "  multithread_http_server: 仅编译多线程HTTP服务器"
@@ -122,6 +128,7 @@ tcp_server.o: tcp_server.c
 tcp_client.o: tcp_client.c
 udp_server.o: udp_server.c
 udp_client.o: udp_client.c
+raw_voice_proto.o: raw_voice_proto.c
 raw_icmp.o: raw_icmp.c
 trace_route.o: trace_route.c
 multithread_http_server.o: multithread_http_server.c
