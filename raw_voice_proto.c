@@ -310,13 +310,7 @@ static void *client_send_thread(void *arg)
     }
 
     for (;;) {
-        /* sleep FRAME_MS using nanosleep */
-        {
-            struct timespec rq;
-            rq.tv_sec = FRAME_MS / 1000;
-            rq.tv_nsec = (FRAME_MS % 1000) * 1000000L;
-            nanosleep(&rq, NULL);
-        }
+        sleep(FRAME_MS / 1000);
 
         /* build private header */
         {
@@ -358,13 +352,14 @@ static void *client_send_thread(void *arg)
 */
 static int open_raw_socket_and_bind(const char *ifname, int is_server_mode)
 {
+    int ssend;
+    int srecv;
+    int on;
+
     /* Mark unused parameters to avoid warnings when not used */
     (void)ifname;
     (void)is_server_mode;
 
-    int ssend;
-    int srecv;
-    int on;
     ssend = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
     if (ssend < 0) {
         log_printf("socket(AF_INET, SOCK_RAW, IPPROTO_RAW) failed: %s", strerror(errno));
