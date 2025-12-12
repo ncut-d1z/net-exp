@@ -245,7 +245,7 @@ static void server_forward_payload(unsigned char *payload, int payload_len,
     unsigned char pktbuf[MAX_PACKET_SIZE];
     int i;
     struct in_addr server_src;
-    if (inet_aton(g_server_ip_str, &server_src) == 0) {
+    if (inet_pton(g_server_ip_str, &server_src) == 0) {
         log_printf("server_forward_payload: invalid server ip %s", g_server_ip_str);
         return;
     }
@@ -303,19 +303,19 @@ static void *client_send_thread(void *arg)
             if (getsockname(tmp, (struct sockaddr *)&local, &ln) == 0) {
                 src_addr = local.sin_addr;
             } else {
-                inet_aton("0.0.0.0", &src_addr);
+                inet_pton("0.0.0.0", &src_addr);
             }
         } else {
-            inet_aton("0.0.0.0", &src_addr);
+            inet_pton("0.0.0.0", &src_addr);
         }
         close(tmp);
     } else {
-        inet_aton("0.0.0.0", &src_addr);
+        inet_pton("0.0.0.0", &src_addr);
     }
 
     while (1) {
         /* sleep FRAME_MS */
-        usleep(FRAME_MS * 1000);
+        sleep(FRAME_MS * 1000);
 
         /* build private header */
         {
@@ -482,7 +482,7 @@ int main(int argc, char **argv)
 
         memset(&server_addr, 0, sizeof(server_addr));
         server_addr.sin_family = AF_INET;
-        if (inet_aton(g_server_ip_str, &server_addr.sin_addr) == 0) {
+        if (inet_pton(g_server_ip_str, &server_addr.sin_addr) == 0) {
             log_printf("Invalid server ip %s", g_server_ip_str);
             return 1;
         }
