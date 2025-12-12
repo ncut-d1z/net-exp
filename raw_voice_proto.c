@@ -5,17 +5,13 @@
  * Build:
  *   gcc -std=c89 -Wall -Wextra -pedantic -O2 -pthread -lm -o raw_voice_proto_fixed raw_voice_proto_fixed.c
  *
- * Run as in original:
+ * Run:
  *   sudo ./raw_voice_proto_fixed server <ifname> <server_ip>
  *   sudo ./raw_voice_proto_fixed client <server_ip> <client_id>
  *
  * Notes:
- * - Adjustments made to be C89-compatible:
- *   * removed use of 'long long' / %llu,
- *   * replaced 64-bit timestamp by two 32-bit fields (sec, usec),
- *   * added missing headers (stdarg.h, math.h),
- *   * removed optional SO_BINDTODEVICE branch to avoid portability/definition issues,
- *   * moved variable declarations to block starts to avoid mixed-decl/code warnings.
+ * - Fixed: replaced inet_aton -> inet_pton, usleep -> nanosleep, marked unused params.
+ * - Behavior: supports both server and client modes.
  */
 
 #include <stdio.h>
@@ -245,7 +241,7 @@ static void server_forward_payload(unsigned char *payload, int payload_len,
     unsigned char pktbuf[MAX_PACKET_SIZE];
     int i;
     struct in_addr server_src;
-    if (inet_pton(g_server_ip_str, &server_src) == 0) {
+    if (inet_pton(AF_INET, g_server_ip_str, &server_src) != 1) {
         log_printf("server_forward_payload: invalid server ip %s", g_server_ip_str);
         return;
     }
@@ -276,7 +272,7 @@ struct send_thread_arg {
     int recv_sock; /* not used by sender but kept for compatibility */
 };
 
-/* -------- Client: sending thread -------- */
+/* -------- Client: sending thread (uses nanosleep instead of usleep) -------- */
 static void *client_send_thread(void *arg)
 {
     struct send_thread_arg *sarg;
@@ -303,19 +299,24 @@ static void *client_send_thread(void *arg)
             if (getsockname(tmp, (struct sockaddr *)&local, &ln) == 0) {
                 src_addr = local.sin_addr;
             } else {
-                inet_pton("0.0.0.0", &src_addr);
+                inet_pton(AF_INET, "0.0.0.0", &src_addr);
             }
         } else {
-            inet_pton("0.0.0.0", &src_addr);
+            inet_pton(AF_INET, "0.0.0.0", &src_addr);
         }
         close(tmp);
     } else {
-        inet_pton("0.0.0.0", &src_addr);
+        inet_pton(AF_INET, "0.0.0.0", &src_addr);
     }
 
-    while (1) {
-        /* sleep FRAME_MS */
-        sleep(FRAME_MS * 1000);
+    for (;;) {
+        /* sleep FRAME_MS using nanosleep */
+        {
+            struct timespec rq;
+            rq.tv_sec = FRAME_MS / 1000;
+            rq.tv_nsec = (FRAME_MS % 1000) * 1000000L;
+            nanosleep(&rq, NULL);
+        }
 
         /* build private header */
         {
@@ -347,15 +348,20 @@ static void *client_send_thread(void *arg)
             }
         }
     }
+    /* not reached */
     return NULL;
 }
 
 /* -------- Open raw sockets helper (returns recv_fd for recv; sets raw_send_sock for sending) --------
    For server: returns a recv socket bound to protocol CUSTOM_PROTO, sets raw_send_sock to IPPROTO_RAW send socket.
-   For client: returns a recv socket for CUSTOM_PROTO, sets raw_send_sock to IPPROTO_RAW send socket.
+   For client: same behavior.
 */
 static int open_raw_socket_and_bind(const char *ifname, int is_server_mode)
 {
+    /* Mark unused parameters to avoid warnings when not used */
+    (void)ifname;
+    (void)is_server_mode;
+
     int ssend;
     int srecv;
     int on;
@@ -378,8 +384,8 @@ static int open_raw_socket_and_bind(const char *ifname, int is_server_mode)
         return -1;
     }
 
-    /* Note: To keep portability and C89 compat, we skip SO_BINDTODEVICE / ioctl parts.
-       Binding to a specific interface is optional for this prototype. */
+    /* Note: we intentionally skip SO_BINDTODEVICE / ioctl interface binding here
+       to keep the code portable and avoid platform-dependent defines. */
 
     raw_send_sock = ssend;
     return srecv;
@@ -412,7 +418,9 @@ int main(int argc, char **argv)
         }
         is_server = 1;
         strncpy(g_ifname, argv[2], sizeof(g_ifname)-1);
+        g_ifname[sizeof(g_ifname)-1] = '\0';
         strncpy(g_server_ip_str, argv[3], sizeof(g_server_ip_str)-1);
+        g_server_ip_str[sizeof(g_server_ip_str)-1] = '\0';
 
         recv_fd = open_raw_socket_and_bind(g_ifname, 1);
         if (recv_fd < 0) {
@@ -472,6 +480,7 @@ int main(int argc, char **argv)
             return 1;
         }
         strncpy(g_server_ip_str, argv[2], sizeof(g_server_ip_str)-1);
+        g_server_ip_str[sizeof(g_server_ip_str)-1] = '\0';
         g_client_id = (u32)atoi(argv[3]);
 
         recv_fd = open_raw_socket_and_bind(NULL, 0);
@@ -482,7 +491,7 @@ int main(int argc, char **argv)
 
         memset(&server_addr, 0, sizeof(server_addr));
         server_addr.sin_family = AF_INET;
-        if (inet_pton(g_server_ip_str, &server_addr.sin_addr) == 0) {
+        if (inet_pton(AF_INET, g_server_ip_str, &server_addr.sin_addr) != 1) {
             log_printf("Invalid server ip %s", g_server_ip_str);
             return 1;
         }
