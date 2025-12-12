@@ -1,7 +1,7 @@
 # 编译器设置
 CC = gcc
 CFLAGS = -std=c89 -Wall -Wextra -pedantic
-LDFLAGS = -lpthread
+LDFLAGS = -lpthread -lm
 
 # 定义目标文件
 TARGETS = tcp_server tcp_client udp_server udp_client raw_voice_proto raw_icmp trace_route multithread_http_server select_io_server select_io_client

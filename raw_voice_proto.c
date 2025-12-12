@@ -1,22 +1,21 @@
-/* raw_voice_proto.c
+/* raw_voice_proto_fixed.c
  *
- * C89 style, Linux RAW-socket based voice prototype (server/client).
+ * C89 style (fixed) version of raw_voice_proto.c
  *
  * Build:
- *   gcc -std=c89 -Wall -O2 -pthread -o raw_voice_proto raw_voice_proto.c
+ *   gcc -std=c89 -Wall -Wextra -pedantic -O2 -pthread -lm -o raw_voice_proto_fixed raw_voice_proto_fixed.c
  *
- * Usage (examples):
- *   Server: ./raw_voice_proto server <ifname> <server_ip>
- *     e.g.: sudo ./raw_voice_proto server eth0 192.168.1.10
- *
- *   Client: ./raw_voice_proto client <server_ip> <client_id>
- *     e.g.: sudo ./raw_voice_proto client 192.168.1.10 42
+ * Run as in original:
+ *   sudo ./raw_voice_proto_fixed server <ifname> <server_ip>
+ *   sudo ./raw_voice_proto_fixed client <server_ip> <client_id>
  *
  * Notes:
- *   - Program uses RAW IPv4 packets with protocol field = 255 (custom).
- *   - Each payload = PRIV_HDR + audio_bytes. Audio bytes are simulated
- *     Gaussian noise generated every FRAME_MS.
- *   - Minimal error handling/logging printed to stdout.
+ * - Adjustments made to be C89-compatible:
+ *   * removed use of 'long long' / %llu,
+ *   * replaced 64-bit timestamp by two 32-bit fields (sec, usec),
+ *   * added missing headers (stdarg.h, math.h),
+ *   * removed optional SO_BINDTODEVICE branch to avoid portability/definition issues,
+ *   * moved variable declarations to block starts to avoid mixed-decl/code warnings.
  */
 
 #include <stdio.h>
@@ -34,6 +33,8 @@
 #include <net/if.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include <stdarg.h>
+#include <math.h>
 
 /* -------- Configuration -------- */
 #define CUSTOM_PROTO 255          /* custom protocol in IP header */
@@ -41,36 +42,40 @@
 #define FRAME_MS 20               /* generate one frame per 20ms */
 #define PLAYBACK_DELAY_MS 60      /* receiver buffering target */
 #define FRAME_BYTES 160           /* simulated audio bytes per frame */
-#define PRIV_HDR_SIZE (4 + 4 + 4 + 8) /* magic(4) client_id(4) seq(4) ts_ms(8) */
 #define MAX_PACKET_SIZE 1500
 #define MAX_CLIENTS 64
 #define HEARTBEAT_INTERVAL_S 10
 
-/* -------- Private header layout --------
+/* -------- Types (C89-friendly) -------- */
+typedef unsigned int u32;
+typedef unsigned long u_long;
+
+/* -------- Private header layout (C89-friendly) --------
    uint32_t magic;
    uint32_t client_id;
    uint32_t seq;
-   uint64_t ts_ms;
+   uint32_t ts_sec;   // seconds part
+   uint32_t ts_usec;  // microseconds part
    followed by audio bytes...
 */
-typedef unsigned int u32;
-typedef unsigned long long u64;
-
 #pragma pack(push,1)
 struct priv_hdr {
     u32 magic;
     u32 client_id;
     u32 seq;
-    u64 ts_ms;
+    u32 ts_sec;
+    u32 ts_usec;
 };
 #pragma pack(pop)
+
+#define PRIV_HDR_SIZE (4 + 4 + 4 + 4 + 4) /* 20 */
 
 /* -------- Client list entry (server-side) -------- */
 struct client_entry {
     int used;
     u32 client_id;
     struct sockaddr_in addr;
-    u64 last_seen_ms;
+    u_long last_seen_ms;
 };
 
 /* -------- Globals -------- */
@@ -78,33 +83,33 @@ static int is_server = 0;
 static char g_ifname[64];
 static char g_server_ip_str[64];
 static u32 g_client_id = 0;
-static int raw_sock = -1;
-static struct client_entry clients[MAX_CLIENTS];
+static int raw_send_sock = -1; /* used for sending raw IP packets */
 static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct client_entry clients[MAX_CLIENTS];
 
-/* -------- Utility: get current time in ms -------- */
-static u64 now_ms(void)
+/* -------- Utility: get current time in ms (returns unsigned long) -------- */
+static unsigned long now_ms(void)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return (u64)tv.tv_sec * 1000ULL + (u64)(tv.tv_usec / 1000);
+    return (unsigned long)tv.tv_sec * 1000UL + (unsigned long)(tv.tv_usec / 1000);
 }
 
-/* -------- Utility: simple logging -------- */
+/* -------- Utility: simple logging (C89-safe) -------- */
 static void log_printf(const char *fmt, ...)
 {
     va_list ap;
+    unsigned long tms;
+    tms = now_ms();
+    printf("[%lu] ", tms);
     va_start(ap, fmt);
-    printf("[%llu] ", (unsigned long long) now_ms());
     vprintf(fmt, ap);
+    va_end(ap);
     printf("\n");
     fflush(stdout);
-    va_end(ap);
 }
 
-/* -------- IP checksum (for header) --------
-   Standard RFC 791 checksum for IP header.
-*/
+/* -------- IP checksum (for header) -------- */
 static unsigned short ip_checksum(unsigned short *buf, int nwords)
 {
     unsigned long sum = 0;
@@ -117,18 +122,18 @@ static unsigned short ip_checksum(unsigned short *buf, int nwords)
     return (unsigned short)(~sum);
 }
 
-/* -------- Build IP packet (header+payload) --------
-   ip_src and ip_dst are in network byte order (struct in_addr).
-   payload_len <= MAX_PACKET_SIZE - sizeof(struct iphdr)
-*/
+/* -------- Build IP packet (header+payload) -------- */
 static int build_ip_packet(unsigned char *buf,
                            const struct in_addr ip_src,
                            const struct in_addr ip_dst,
                            const unsigned char *payload, int payload_len)
 {
-    struct iphdr *ip = (struct iphdr *)buf;
-    int iphdr_len = sizeof(struct iphdr);
-    int total_len = iphdr_len + payload_len;
+    struct iphdr *ip;
+    int iphdr_len;
+    int total_len;
+    ip = (struct iphdr *)buf;
+    iphdr_len = sizeof(struct iphdr);
+    total_len = iphdr_len + payload_len;
 
     memset(buf, 0, iphdr_len + payload_len);
 
@@ -147,7 +152,7 @@ static int build_ip_packet(unsigned char *buf,
     /* copy payload */
     memcpy(buf + iphdr_len, payload, payload_len);
 
-    /* compute checksum */
+    /* compute checksum (in 16-bit words) */
     ip->check = ip_checksum((unsigned short *)ip, ip->ihl);
 
     return total_len;
@@ -161,13 +166,14 @@ static int parse_ip_packet(unsigned char *buf, int buflen,
                            struct in_addr *src_addr,
                            unsigned char **payload_ptr, int *payload_len)
 {
+    struct iphdr *ip;
+    int ihl;
     if (buflen < (int)sizeof(struct iphdr)) return -1;
-    struct iphdr *ip = (struct iphdr *)buf;
+    ip = (struct iphdr *)buf;
     if (ip->version != 4) return -1;
     if (ip->protocol != CUSTOM_PROTO) return -1;
 
-    /* compute ip header length in bytes */
-    int ihl = ip->ihl * 4;
+    ihl = ip->ihl * 4;
     if (buflen < ihl) return -1;
 
     *src_addr = *(struct in_addr *)&ip->saddr;
@@ -197,12 +203,12 @@ static double rand_gaussian(void)
     return sqrt(s) * cos(2.0 * 3.14159265358979323846 * u2);
 }
 
-/* -------- Send raw packet via raw_sock (IP header included) -------- */
+/* -------- Send raw packet via raw_send_sock (IP header included) -------- */
 static ssize_t send_raw_packet(int sock, const unsigned char *packet, int pktlen,
                                struct sockaddr_in *dst)
 {
-    ssize_t sent = sendto(sock, packet, pktlen, 0,
-                          (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+    ssize_t sent;
+    sent = sendto(sock, packet, pktlen, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
     return sent;
 }
 
@@ -219,15 +225,13 @@ static void server_register_client(u32 client_id, struct sockaddr_in *addr)
             return;
         }
     }
-    /* insert new */
     for (i = 0; i < MAX_CLIENTS; i++) {
         if (!clients[i].used) {
             clients[i].used = 1;
             clients[i].client_id = client_id;
             clients[i].addr = *addr;
             clients[i].last_seen_ms = now_ms();
-            log_printf("Registered client id=%u addr=%s:%d", client_id,
-                       inet_ntoa(addr->sin_addr), ntohs(addr->sin_port));
+            log_printf("Registered client id=%u addr=%s", client_id, inet_ntoa(addr->sin_addr));
             break;
         }
     }
@@ -241,7 +245,6 @@ static void server_forward_payload(unsigned char *payload, int payload_len,
     unsigned char pktbuf[MAX_PACKET_SIZE];
     int i;
     struct in_addr server_src;
-    /* set server source as g_server_ip_str */
     if (inet_aton(g_server_ip_str, &server_src) == 0) {
         log_printf("server_forward_payload: invalid server ip %s", g_server_ip_str);
         return;
@@ -250,300 +253,136 @@ static void server_forward_payload(unsigned char *payload, int payload_len,
     pthread_mutex_lock(&clients_lock);
     for (i = 0; i < MAX_CLIENTS; i++) {
         if (!clients[i].used) continue;
-        /* don't send back to original sender (compare addresses) */
         if (clients[i].addr.sin_addr.s_addr == src_addr.s_addr) continue;
 
-        /* build ip packet with server as src and target client as dst */
-        int pktlen = build_ip_packet(pktbuf, server_src, clients[i].addr.sin_addr,
+        {
+            int pktlen;
+            struct sockaddr_in dst;
+            pktlen = build_ip_packet(pktbuf, server_src, clients[i].addr.sin_addr,
                                      payload, payload_len);
-        struct sockaddr_in dst = clients[i].addr;
-        dst.sin_port = 0; /* raw send ignores port */
-        if (send_raw_packet(raw_sock, pktbuf, pktlen, &dst) < 0) {
-            log_printf("Forward to %s failed: %s",
-                       inet_ntoa(clients[i].addr.sin_addr), strerror(errno));
+            dst = clients[i].addr;
+            dst.sin_port = 0;
+            if (send_raw_packet(raw_send_sock, pktbuf, pktlen, &dst) < 0) {
+                log_printf("Forward to %s failed: %s", inet_ntoa(clients[i].addr.sin_addr), strerror(errno));
+            }
         }
     }
     pthread_mutex_unlock(&clients_lock);
 }
 
-/* -------- Server main loop thread -------- */
-static void *server_recv_thread(void *arg)
-{
-    (void)arg;
-    unsigned char rxbuf[2048];
-    while (1) {
-        struct sockaddr_in src_sock;
-        socklen_t slen = sizeof(src_sock);
-        ssize_t r = recvfrom(raw_sock, rxbuf, sizeof(rxbuf), 0,
-                             (struct sockaddr *)&src_sock, &slen);
-        if (r <= 0) {
-            log_printf("recvfrom raw_sock error: %s", strerror(errno));
-            continue;
-        }
-        struct in_addr pkt_src;
-        unsigned char *payload;
-        int payload_len;
-        if (parse_ip_packet(rxbuf, (int)r, &pkt_src, &payload, &payload_len) < 0) {
-            /* not our custom proto or malformed */
-            continue;
-        }
-        /* check private header */
-        if (payload_len < (int)sizeof(struct priv_hdr)) continue;
-        struct priv_hdr ph;
-        memcpy(&ph, payload, sizeof(ph));
-        if (ntohl((u32)ph.magic) != MAGIC) continue;
-
-        ph.client_id = ntohl(ph.client_id);
-        ph.seq = ntohl(ph.seq);
-        /* ts is network-order 64-bit (we stored as host order; convert manually) */
-        {
-            u64 be_ts = 0;
-            unsigned char *p = (unsigned char *)&ph.ts_ms;
-            int i;
-            /* reconstruct big-endian u64 */
-            for (i = 0; i < 8; i++) {
-                be_ts = (be_ts << 8) | (unsigned long long)(p[i]);
-            }
-            /* convert to host if needed — for simplicity assume network order inserted same way */
-            /* In this code we don't strictly rely on ph.ts_ms value besides logging */
-        }
-
-        /* register client; source address is pkt_src */
-        struct sockaddr_in client_addr;
-        memset(&client_addr, 0, sizeof(client_addr));
-        client_addr.sin_family = AF_INET;
-        client_addr.sin_addr = pkt_src;
-        server_register_client(ntohl(ph.client_id), &client_addr);
-
-        /* forward payload (private hdr + audio) to other clients */
-        server_forward_payload(payload, payload_len, pkt_src);
-    }
-    return NULL;
-}
-
-/* -------- Client: sending thread -------- */
+/* -------- Client: sending thread arg -------- */
 struct send_thread_arg {
     struct sockaddr_in server_addr;
+    int recv_sock; /* not used by sender but kept for compatibility */
 };
 
+/* -------- Client: sending thread -------- */
 static void *client_send_thread(void *arg)
 {
-    struct send_thread_arg *sarg = (struct send_thread_arg *)arg;
-    unsigned int seq = 0;
+    struct send_thread_arg *sarg;
+    unsigned int seq;
     unsigned char payload[PRIV_HDR_SIZE + FRAME_BYTES];
     unsigned char pktbuf[MAX_PACKET_SIZE];
     struct in_addr src_addr;
+    int tmp;
+    sarg = (struct send_thread_arg *)arg;
+    seq = 0;
+
     /* determine local source IP by connecting a UDP socket to server (non-raw) */
-    {
-        int tmp = socket(AF_INET, SOCK_DGRAM, 0);
-        if (tmp >= 0) {
-            struct sockaddr_in serv = sarg->server_addr;
-            serv.sin_port = htons(53);
-            if (connect(tmp, (struct sockaddr *)&serv, sizeof(serv)) == 0) {
-                struct sockaddr_in local;
-                socklen_t ln = sizeof(local);
-                if (getsockname(tmp, (struct sockaddr *)&local, &ln) == 0) {
-                    src_addr = local.sin_addr;
-                } else {
-                    inet_aton("0.0.0.0", &src_addr);
-                }
+    tmp = socket(AF_INET, SOCK_DGRAM, 0);
+    if (tmp >= 0) {
+        struct sockaddr_in serv;
+        struct sockaddr_in local;
+        socklen_t ln;
+        memset(&serv, 0, sizeof(serv));
+        serv.sin_family = AF_INET;
+        serv.sin_addr = sarg->server_addr.sin_addr;
+        serv.sin_port = htons(53);
+        if (connect(tmp, (struct sockaddr *)&serv, sizeof(serv)) == 0) {
+            ln = sizeof(local);
+            if (getsockname(tmp, (struct sockaddr *)&local, &ln) == 0) {
+                src_addr = local.sin_addr;
             } else {
                 inet_aton("0.0.0.0", &src_addr);
             }
-            close(tmp);
         } else {
             inet_aton("0.0.0.0", &src_addr);
         }
+        close(tmp);
+    } else {
+        inet_aton("0.0.0.0", &src_addr);
     }
 
     while (1) {
-        /* clock-driven generation: sleep FRAME_MS */
+        /* sleep FRAME_MS */
         usleep(FRAME_MS * 1000);
 
-        /* build private header (network byte order) */
-        struct priv_hdr ph;
-        ph.magic = htonl((u32)MAGIC);
-        ph.client_id = htonl((u32)g_client_id);
-        ph.seq = htonl((u32)seq++);
+        /* build private header */
         {
-            u64 ts = now_ms();
-            /* store ts in network byte order (big-endian) */
-            unsigned char *p = (unsigned char *)&ph.ts_ms;
+            struct priv_hdr ph;
+            struct timeval tv;
             int i;
-            for (i = 0; i < 8; i++) {
-                p[7 - i] = (unsigned char)(ts & 0xFF);
-                ts >>= 8;
-            }
-        }
-
-        /* simulate audio bytes (Gaussian scaled to int8) */
-        {
-            int i;
+            gettimeofday(&tv, NULL);
+            ph.magic = htonl((u32)MAGIC);
+            ph.client_id = htonl((u32)g_client_id);
+            ph.seq = htonl((u32)seq++);
+            ph.ts_sec = htonl((u32)tv.tv_sec);
+            ph.ts_usec = htonl((u32)tv.tv_usec);
+            /* copy header */
+            memcpy(payload, &ph, sizeof(ph));
+            /* simulate audio bytes */
             for (i = 0; i < FRAME_BYTES; i++) {
-                double g = rand_gaussian() * 10.0; /* scale down amplitude */
+                double g = rand_gaussian() * 10.0;
                 int v = (int)(g);
                 payload[PRIV_HDR_SIZE + i] = (unsigned char)(v & 0xFF);
             }
         }
-        /* copy header + payload */
-        memcpy(payload, &ph, sizeof(ph));
 
-        /* build full ip packet where dst is server */
-        int pktlen = build_ip_packet(pktbuf, src_addr, sarg->server_addr.sin_addr,
-                                     payload, PRIV_HDR_SIZE + FRAME_BYTES);
-
-        /* send */
-        if (send_raw_packet(raw_sock, pktbuf, pktlen, &sarg->server_addr) < 0) {
-            log_printf("client send failed: %s", strerror(errno));
-        } else {
-            /* optionally log minimal info */
-            /* log_printf("sent seq=%u to server", seq-1); */
-        }
-    }
-    return NULL;
-}
-
-/* -------- Client: receive thread (collect & "play") -------- */
-static void *client_recv_thread(void *arg)
-{
-    (void)arg;
-    unsigned char rxbuf[2048];
-    while (1) {
-        struct sockaddr_in src_sock;
-        socklen_t slen = sizeof(src_sock);
-        ssize_t r = recvfrom(raw_sock, rxbuf, sizeof(rxbuf), 0,
-                             (struct sockaddr *)&src_sock, &slen);
-        if (r <= 0) {
-            log_printf("client recv error: %s", strerror(errno));
-            continue;
-        }
-        struct in_addr pkt_src;
-        unsigned char *payload;
-        int payload_len;
-        if (parse_ip_packet(rxbuf, (int)r, &pkt_src, &payload, &payload_len) < 0) {
-            continue;
-        }
-        if (payload_len < (int)sizeof(struct priv_hdr)) continue;
-        struct priv_hdr ph;
-        memcpy(&ph, payload, sizeof(ph));
-        if (ntohl((u32)ph.magic) != MAGIC) continue;
-
-        u32 sender_id = ntohl(ph.client_id);
-        u32 seq = ntohl(ph.seq);
-        /* parse timestamp (big endian) */
         {
-            u64 ts = 0;
-            unsigned char *p = (unsigned char *)&ph.ts_ms;
-            int i;
-            for (i = 0; i < 8; i++) {
-                ts = (ts << 8) | (unsigned long long)p[i];
-            }
-            u64 delay = now_ms() - ts;
-            /* log occasionally */
-            if ((seq % 50) == 0) {
-                log_printf("rx from id=%u seq=%u delay=%llu ms payload=%d",
-                           sender_id, seq, (unsigned long long)delay, payload_len - sizeof(ph));
+            int pktlen;
+            pktlen = build_ip_packet(pktbuf, src_addr, sarg->server_addr.sin_addr,
+                                     payload, PRIV_HDR_SIZE + FRAME_BYTES);
+            if (send_raw_packet(raw_send_sock, pktbuf, pktlen, &sarg->server_addr) < 0) {
+                log_printf("client send failed: %s", strerror(errno));
             }
         }
-
-        /* Simulate "play": we simply drop or write to log (no audio device used). */
-        /* In a full implementation we'd insert into jitter buffer keyed by seq/timestamp. */
     }
     return NULL;
 }
 
-/* -------- Helper: open raw socket and set IP_HDRINCL, bind to interface if server -------- */
+/* -------- Open raw sockets helper (returns recv_fd for recv; sets raw_send_sock for sending) --------
+   For server: returns a recv socket bound to protocol CUSTOM_PROTO, sets raw_send_sock to IPPROTO_RAW send socket.
+   For client: returns a recv socket for CUSTOM_PROTO, sets raw_send_sock to IPPROTO_RAW send socket.
+*/
 static int open_raw_socket_and_bind(const char *ifname, int is_server_mode)
 {
-    int s = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-    if (s < 0) {
-        log_printf("socket(AF_INET, SOCK_RAW) failed: %s", strerror(errno));
+    int ssend;
+    int srecv;
+    int on;
+    ssend = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    if (ssend < 0) {
+        log_printf("socket(AF_INET, SOCK_RAW, IPPROTO_RAW) failed: %s", strerror(errno));
         return -1;
     }
-    /* set IP_HDRINCL so we provide our own IP header */
-    {
-        int on = 1;
-        if (setsockopt(s, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
-            log_printf("setsockopt(IP_HDRINCL) failed: %s", strerror(errno));
-            close(s);
-            return -1;
-        }
+    on = 1;
+    if (setsockopt(ssend, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
+        log_printf("setsockopt(IP_HDRINCL) failed: %s", strerror(errno));
+        close(ssend);
+        return -1;
     }
-    /* If server, open a separate raw socket for receiving (because IPPROTO_RAW cannot receive).
-       We'll close s and instead open a recv socket bound to protocol CUSTOM_PROTO.
-    */
-    if (is_server_mode) {
-        close(s);
-        s = socket(AF_INET, SOCK_RAW, CUSTOM_PROTO);
-        if (s < 0) {
-            log_printf("server recv socket(AF_INET, SOCK_RAW, %d) failed: %s",
-                       CUSTOM_PROTO, strerror(errno));
-            return -1;
-        }
-        /* optionally bind to interface */
-        if (ifname && ifname[0]) {
-            struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name)-1);
-            if (setsockopt(s, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr)) < 0) {
-                /* try ioctl approach */
-                int fd = socket(AF_INET, SOCK_DGRAM, 0);
-                if (fd >= 0) {
-                    if (ioctl(fd, SIOCGIFADDR, &ifr) == 0) {
-                        /* no-op, we only wanted to ensure interface exists */
-                    }
-                    close(fd);
-                }
-                /* if setsockopt fails, we continue; binding to device is optional */
-            }
-        }
-        /* server also needs a raw send socket with IP_HDRINCL for forwarding */
-        /* open send socket */
-        {
-            int ssend = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-            if (ssend < 0) {
-                log_printf("server send socket open failed: %s", strerror(errno));
-                close(s);
-                return -1;
-            }
-            {
-                int on = 1;
-                setsockopt(ssend, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on));
-            }
-            /* we will use two descriptors: one recv (s) and reuse ssend for raw sending */
-            /* to simplify, set global raw_sock to ssend and create a duplicate for recv in select */
-            raw_sock = ssend;
-            /* return the recv socket in caller via separate variable? For brevity, we set global recv socket via another global */
-            /* But to keep functions simple, we'll dup s into a separate fd stored in raw_sock+1? Simpler: close ssend and use s for both send/recv is tricky. */
-            /* Simpler approach: return ssend and keep s in a static variable accessible via a hack — but for clarity, we instead create a process where recv uses a different local socket in server thread directly. */
-            /* We'll store recv fd inside a heap and pass via thread arg in main. */
-            /* For current function, return s (recv fd) and leave raw_sock as send socket. */
-            return s; /* s is recv fd, raw_sock has been set to ssend */
-        }
-    } else {
-        /* client: we want a single raw socket for send and recv of our custom proto.
-           Create a socket for sending with IP_HDRINCL and another socket for receiving custom proto.
-        */
-        close(s);
-        int ssend = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-        if (ssend < 0) {
-            log_printf("client send socket open failed: %s", strerror(errno));
-            return -1;
-        }
-        {
-            int on = 1;
-            setsockopt(ssend, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on));
-        }
-        /* receive socket for CUSTOM_PROTO */
-        int srecv = socket(AF_INET, SOCK_RAW, CUSTOM_PROTO);
-        if (srecv < 0) {
-            log_printf("client recv socket open failed: %s", strerror(errno));
-            close(ssend);
-            return -1;
-        }
-        raw_sock = ssend; /* use raw_sock for sending; return receive fd */
-        return srecv;
+
+    srecv = socket(AF_INET, SOCK_RAW, CUSTOM_PROTO);
+    if (srecv < 0) {
+        log_printf("recv socket(AF_INET, SOCK_RAW, %d) failed: %s", CUSTOM_PROTO, strerror(errno));
+        close(ssend);
+        return -1;
     }
+
+    /* Note: To keep portability and C89 compat, we skip SO_BINDTODEVICE / ioctl parts.
+       Binding to a specific interface is optional for this prototype. */
+
+    raw_send_sock = ssend;
+    return srecv;
 }
 
 /* -------- Main -------- */
@@ -556,6 +395,17 @@ int main(int argc, char **argv)
     srand((unsigned int)(time(NULL) ^ getpid()));
 
     if (strcmp(argv[1], "server") == 0) {
+        int recv_fd;
+        unsigned char rxbuf[4096];
+        struct sockaddr_in src_sock;
+        socklen_t slen;
+        int r;
+        struct in_addr pkt_src;
+        unsigned char *payload;
+        int payload_len;
+        struct priv_hdr ph;
+        int cid;
+
         if (argc < 4) {
             fprintf(stderr, "server usage: %s server <ifname> <server_ip>\n", argv[0]);
             return 1;
@@ -564,63 +414,59 @@ int main(int argc, char **argv)
         strncpy(g_ifname, argv[2], sizeof(g_ifname)-1);
         strncpy(g_server_ip_str, argv[3], sizeof(g_server_ip_str)-1);
 
-        /* open sockets: returns recv_fd; raw_sock global is send socket */
-        int recv_fd = open_raw_socket_and_bind(g_ifname, 1);
+        recv_fd = open_raw_socket_and_bind(g_ifname, 1);
         if (recv_fd < 0) {
             log_printf("Server: failed to open raw sockets");
             return 1;
         }
 
-        /* create server recv thread (using recv_fd) */
-        pthread_t recv_tid;
-        /* pass recv_fd via global duplication: duplicate descriptor into raw_sock+? simplest: set raw_sock_send already; but server_recv_thread uses global raw_sock for forwarding and uses recvfd via closure? */
-        /* To resolve: we'll dup recv_fd into STDIN_FILENO slot and set a global recv_fd. Simpler: store in a static variable. */
-        /* For neatness, create a small wrapper that sets a global recv_fd_var. */
-        {
-            /* store recv fd in a heap pointer passed as arg */
-            int *pfd = (int *)malloc(sizeof(int));
-            if (!pfd) return 1;
-            *pfd = recv_fd;
-            /* modify server_recv_thread to use recv_fd from * (we currently use raw_sock directly). For brevity in this prototype, we will instead use select on recv_fd in main loop. */
-            /* Launch a thread that calls a small lambda — but in C89 we cannot create lambdas. So instead we will use recv_fd in this main thread loop (blocking) and not spawn another thread. */
-            free(pfd);
-        }
-
         log_printf("Server started on interface=%s ip=%s", g_ifname, g_server_ip_str);
 
-        /* Simple server loop in main: receive via recv_fd, parse, register, forward */
-        {
-            unsigned char rxbuf[4096];
-            while (1) {
-                struct sockaddr_in src_sock;
-                socklen_t slen = sizeof(src_sock);
-                ssize_t r = recvfrom(recv_fd, rxbuf, sizeof(rxbuf), 0,
-                                     (struct sockaddr *)&src_sock, &slen);
-                if (r <= 0) {
-                    log_printf("server recvfrom error: %s", strerror(errno));
-                    continue;
-                }
-                struct in_addr pkt_src;
-                unsigned char *payload;
-                int payload_len;
-                if (parse_ip_packet(rxbuf, (int)r, &pkt_src, &payload, &payload_len) < 0) continue;
-                if (payload_len < (int)sizeof(struct priv_hdr)) continue;
-                struct priv_hdr ph;
-                memcpy(&ph, payload, sizeof(ph));
-                if (ntohl((u32)ph.magic) != MAGIC) continue;
-                u32 cid = ntohl(ph.client_id);
-                /* register client */
+        for (;;) {
+            slen = sizeof(src_sock);
+            r = recvfrom(recv_fd, rxbuf, sizeof(rxbuf), 0, (struct sockaddr *)&src_sock, &slen);
+            if (r <= 0) {
+                log_printf("server recvfrom error: %s", strerror(errno));
+                continue;
+            }
+            if (parse_ip_packet(rxbuf, r, &pkt_src, &payload, &payload_len) < 0) continue;
+            if (payload_len < (int)sizeof(struct priv_hdr)) continue;
+            memcpy(&ph, payload, sizeof(ph));
+            if (ntohl((u32)ph.magic) != MAGIC) continue;
+            cid = ntohl(ph.client_id);
+
+            /* register client */
+            {
                 struct sockaddr_in client_addr;
                 memset(&client_addr, 0, sizeof(client_addr));
                 client_addr.sin_family = AF_INET;
                 client_addr.sin_addr = pkt_src;
-                server_register_client(cid, &client_addr);
-                /* forward payload to others */
-                server_forward_payload(payload, payload_len, pkt_src);
+                server_register_client((u32)cid, &client_addr);
             }
+
+            /* forward payload (private hdr + audio) to other clients */
+            server_forward_payload(payload, payload_len, pkt_src);
         }
 
     } else if (strcmp(argv[1], "client") == 0) {
+        int recv_fd;
+        struct sockaddr_in server_addr;
+        pthread_t send_tid;
+        struct send_thread_arg sarg;
+        unsigned char rxbuf[2048];
+        struct sockaddr_in src_sock;
+        socklen_t slen;
+        int r;
+        struct in_addr pkt_src;
+        unsigned char *payload;
+        int payload_len;
+        struct priv_hdr ph;
+        u32 sender_id;
+        u32 seq;
+        unsigned long ts_ms;
+        u32 secs;
+        u32 usec;
+
         if (argc < 4) {
             fprintf(stderr, "client usage: %s client <server_ip> <client_id>\n", argv[0]);
             return 1;
@@ -628,15 +474,12 @@ int main(int argc, char **argv)
         strncpy(g_server_ip_str, argv[2], sizeof(g_server_ip_str)-1);
         g_client_id = (u32)atoi(argv[3]);
 
-        /* open sockets: returns recv_fd; raw_sock global is send socket */
-        int recv_fd = open_raw_socket_and_bind(NULL, 0);
+        recv_fd = open_raw_socket_and_bind(NULL, 0);
         if (recv_fd < 0) {
             log_printf("Client: failed to open raw sockets");
             return 1;
         }
 
-        /* Prepare server sockaddr */
-        struct sockaddr_in server_addr;
         memset(&server_addr, 0, sizeof(server_addr));
         server_addr.sin_family = AF_INET;
         if (inet_aton(g_server_ip_str, &server_addr.sin_addr) == 0) {
@@ -644,64 +487,38 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        /* create send & recv threads: send uses raw_sock (global send), recv uses recv_fd */
-        pthread_t send_tid, recv_tid;
-        struct send_thread_arg sarg;
         sarg.server_addr = server_addr;
+        sarg.recv_sock = recv_fd;
 
-        /* Set raw_sock send socket already in open_raw_socket_and_bind */
-        /* But recv thread should use recv_fd; we will swap raw_sock temporarily to allow recvfrom in client_recv_thread to read from recv_fd.
-           To keep code simpler: we close previous raw_sock, set global raw_sock appropriately:
-        */
-        /* store global send socket in raw_sock (already set), but we need recv socket for recv thread. We'll pass it via a global by duping descriptor into raw_sock_recv_fd variable. Simpler: set global raw_sock_recv to recv_fd via dup. */
-        /* For prototype, we will use recv_fd directly inside client_recv_thread by modifying that thread to use recv_fd passed as argument. To avoid extra refactor here, we will spawn a small thread wrapper that stores recv_fd in a static global. */
-
-        /* Create thread for sender (it uses server_addr) */
         if (pthread_create(&send_tid, NULL, client_send_thread, &sarg) != 0) {
             log_printf("pthread_create send failed");
             return 1;
         }
-
-        /* For receiving we will call a simple loop in main (rather than thread) */
-        /* detach send thread to keep program running */
         pthread_detach(send_tid);
 
-        /* Receive loop in main */
-        unsigned char rxbuf[2048];
-        while (1) {
-            struct sockaddr_in src_sock;
-            socklen_t slen = sizeof(src_sock);
-            ssize_t r = recvfrom(recv_fd, rxbuf, sizeof(rxbuf), 0,
-                                 (struct sockaddr *)&src_sock, &slen);
+        for (;;) {
+            slen = sizeof(src_sock);
+            r = recvfrom(recv_fd, rxbuf, sizeof(rxbuf), 0, (struct sockaddr *)&src_sock, &slen);
             if (r <= 0) {
                 log_printf("client recvfrom error: %s", strerror(errno));
                 continue;
             }
-            struct in_addr pkt_src;
-            unsigned char *payload;
-            int payload_len;
-            if (parse_ip_packet(rxbuf, (int)r, &pkt_src, &payload, &payload_len) < 0) continue;
+            if (parse_ip_packet(rxbuf, r, &pkt_src, &payload, &payload_len) < 0) continue;
             if (payload_len < (int)sizeof(struct priv_hdr)) continue;
-            struct priv_hdr ph;
             memcpy(&ph, payload, sizeof(ph));
             if (ntohl((u32)ph.magic) != MAGIC) continue;
-            u32 sender_id = ntohl(ph.client_id);
-            u32 seq = ntohl(ph.seq);
-            /* parse timestamp (big endian) */
-            {
-                u64 ts = 0;
-                unsigned char *p = (unsigned char *)&ph.ts_ms;
-                int i;
-                for (i = 0; i < 8; i++) {
-                    ts = (ts << 8) | (unsigned long long)p[i];
-                }
-                u64 delay = now_ms() - ts;
-                if ((seq % 50) == 0) {
-                    log_printf("RX from %u seq=%u delay=%llu ms", sender_id, seq, (unsigned long long)delay);
-                }
-            }
-        }
 
+            sender_id = ntohl(ph.client_id);
+            seq = ntohl(ph.seq);
+            secs = ntohl(ph.ts_sec);
+            usec = ntohl(ph.ts_usec);
+            ts_ms = (unsigned long)secs * 1000UL + (unsigned long)(usec / 1000);
+            if ((seq % 50) == 0) {
+                unsigned long delay = now_ms() - ts_ms;
+                log_printf("RX from %u seq=%u delay=%lu ms", (unsigned int)sender_id, (unsigned int)seq, delay);
+            }
+            /* In prototype: "play" is a no-op (drop) or log */
+        }
     } else {
         fprintf(stderr, "Unknown mode: %s\n", argv[1]);
         return 1;
